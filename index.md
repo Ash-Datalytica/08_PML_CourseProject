@@ -301,7 +301,7 @@ cm
 stopCluster(cl) # Explicitly free up cores again.
 ```
 
-This approach gives us similar results in terms of Accuracy (**98.22%**) but takes a lot less time to build the model. We chose this approch to be the final. So, out of sample error of the model is **1.78%**.
+This approach gives us similar results in terms of Accuracy (**98.22%**) but takes a lot less time to build the model. We chose this approch to be the final. So, expected out of sample error of the model is **1.78%**.
 
 ### Predicting classes
 Now we'll use the model to predict values of `classe` variable for test dataset. 

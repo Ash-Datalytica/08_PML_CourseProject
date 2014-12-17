@@ -189,7 +189,7 @@ cm
 stopCluster(cl) # Explicitly free up cores again.
 ```
 
-This approach gives us similar results in terms of Accuracy (**`r round(cm$overall[1]*100,2)`%**) but takes a lot less time to build the model. We chose this approch to be the final. So, out of sample error of the model is **`r round(100-cm$overall[1]*100,2)`%**.
+This approach gives us similar results in terms of Accuracy (**`r round(cm$overall[1]*100,2)`%**) but takes a lot less time to build the model. We chose this approch to be the final. So, expected out of sample error of the model is **`r round(100-cm$overall[1]*100,2)`%**.
 
 ### Predicting classes
 Now we'll use the model to predict values of `classe` variable for test dataset. 
