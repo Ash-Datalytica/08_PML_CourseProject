@@ -1,0 +1,213 @@
+---
+title: "Course Project"
+output: html_document
+---
+**Practical Machine Learning**  
+*by Brian Caffo, PhD, Jeff Leek, PhD, Roger D. Peng, PhD*  
+*Johns Hopkins Bloomberg School of PULIC HEALTH*  
+
+### Problem definition
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+### Getting data
+For the first run we download CSV files with training and testing from the links and store them locally in the `/data/` subfolder of the working directory.
+```{r obtainData, echo = TRUE, cache=TRUE, results='hide' }
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainFile <- "./data/pml-training.csv"
+testFile <- "./data/pml-testing.csv"
+if (!file.exists(trainFile)) {
+    download.file (trainURL, trainFile, mode="wb"); 
+    trainDownloadDate <- Sys.Date()
+}
+if (!file.exists(testFile)) {
+    download.file (testURL, testFile, mode="wb"); 
+    testDownloadDate <- Sys.Date()
+}
+
+```
+
+Use `fread()` for fast file reading. We consider value `"#DIV/0!"` to be equal to `NA`.
+```{r loadData, echo = TRUE, message=FALSE}
+library(data.table)
+train <- fread(trainFile, sep = ",", header = TRUE, na.strings = c("", "NA", "#DIV/0!"), 
+               stringsAsFactors = FALSE, data.table = FALSE)
+test <- fread(testFile, sep = ",", header = TRUE, na.strings = c("", "NA", "#DIV/0!"), 
+               stringsAsFactors = FALSE, data.table = FALSE)
+```
+
+### Cleaning data
+We need to process loaded data for further analysis: give names to varables with no names, convert strings to factors, and convert numeric variables wich were recognised by `fread()` as character to be really numeric.
+
+```{r cleanData, results='hide'}
+names(train)[1] <- "id"
+train$classe <- as.factor(train$classe)
+train$new_window <- as.factor(train$new_window)
+train$user_name <- as.factor(train$user_name)
+
+notUsedColumns <- c(1,5) #id, cvtd_timestamp (date) - won't use as predictors and won't convert to num
+charColumns <- which(sapply(train, class) == "character")
+charColumns <- setdiff(charColumns, notUsedColumns )
+train[,charColumns] <- apply(train[, charColumns], 2, as.numeric)
+
+names(test)[1] <- "id"
+test$new_window <- as.factor(test$new_window)
+test$user_name <- as.factor(test$user_name)
+test[,charColumns] <- apply(test[, charColumns], 2, as.numeric)
+```
+
+### Exploring data
+
+First, we split initial train data into training and validating datasets. We use only 10% of train data for training and the remaining 90% go to valitating because it is enough to achive satisfactory accuracy and takes considerably smaller amount of time and computer memory to build the model then recommended 70/30 split.
+
+Then, we investigate training subset.
+```{r EDA, echo = TRUE, message=FALSE }
+#Split data into training and validating subsets
+library (caret)
+set.seed (1234)
+inTrain <- createDataPartition(y = train$classe, p=0.10, list=FALSE)
+training <- train [inTrain,]
+validating <- train [-inTrain,]
+
+#size of data sets
+dim (training); dim (validating)
+
+#outcome variable
+summary(training$classe)
+
+#non numeric variables
+table(sapply(training, class))
+names(training)[!(sapply(training, class) %in% c("numeric", "integer"))]
+```
+
+### Data preprocessing
+First, define  features (variables) wich don't hold enough variance. For example, if all values of a feature are NA, such feature is useless as a predictor. Moreover, algorithms which we are going to use (KNN, RF) dont work with such features. We won't use them further as predictors. We set very low cutoff level of 0.05% to leave more varibles as potential predictors.
+```{r processFeaturesNZV, cache=TRUE}
+#Exclude near zero variance variables, e.g. all values are NA's
+notUsedColumns <- union(notUsedColumns, 
+                        nearZeroVar (training, saveMetrics=FALSE, uniqueCut = 0.05))
+names(training)[notUsedColumns]
+```
+
+Second, we impute NA values for all numeric variables which have non zero variance. Do it with both training and validating datasets.
+```{r processFeaturesImpute, cache=TRUE}
+#impute NA's for integer and numeric (not Factor or character)
+numColumns <- setdiff(which(sapply(training, class) %in% c("numeric", "integer")), notUsedColumns)
+preObj <- preProcess(training[,numColumns], method="knnImpute") #K-nearest neighbours imputation
+training[,numColumns] <- predict(preObj, training[,numColumns])
+
+## Process validating features
+validating[,numColumns] <- predict(preObj, validating[,numColumns])
+```
+
+Third, we want to reduce training set by reducing the number of predictors. We could do this using principal component analysis method. PCA method doesn't work with Factor variables, so we run it on all numeric variables and then add to the dataset factors which we belive to be usefull - `user_name` and `new_window`.
+```{r processFeaturesPCA, cache=TRUE, eval=FALSE}
+preProc <- preProcess(training[,numColumns], method="pca", thresh=0.99)
+preProc 
+trainingPC <- predict(preProc, training[,numColumns])
+#return Factor and outcome columns into the training set
+trainingPC <- cbind(trainingPC,
+                     training[,c("user_name", "new_window", "classe")])
+
+#get PC for validating dataset based on the training preprocessing
+validatingPC <- predict (preProc, validating[,numColumns]) 
+#Put back Factor columns into the Validating set
+validatingPC <- cbind(validatingPC,
+                     validating[,c("user_name", "new_window", "classe")])
+```
+
+Experiments with models built on the reduced by PCA dataset have shown that appropriate performance of Accuracy = 96% could be achived when we train the model on the 75% of all data with PCA threshold equal to 99.9% (106 predictors). In this case training process **takes a lot of time and computer memory**.  
+We choose to use repeated k-fold cross validation as one of the best methods according to [this](http://appliedpredictivemodeling.com/blog/2014/11/27/vpuig01pqbklmi72b8lcl3ij5hj2qm) Max Kuhn's article. 
+```{r trainModelPCA, cache=TRUE, eval=FALSE}
+library("doSNOW")
+# Assign number of cores you want to use; in this case use 5 cores. 
+cl<-makeCluster(5) 
+registerDoSNOW(cl) # Register the cores.
+
+nPredictors <- dim (trainingPC)[2]-1
+#Using repeated CV, http://appliedpredictivemodeling.com/blog/2014/11/27/vpuig01pqbklmi72b8lcl3ij5hj2qm
+system.time ({
+    modFit <- train (classe ~ . , 
+                 data=trainingPC, method = "rf", prox=TRUE,
+                 trControl = trainControl (method="cv", number = 10, repeats = 10),
+                 tuneGrid=data.frame(mtry=c(ceiling(sqrt(nPredictors)),
+                                            ceiling(nPredictors/3),
+                                            ceiling(nPredictors/2),
+                                            ceiling(nPredictors*2/3),
+                                            nPredictors))
+                  )
+}) 
+modFit
+
+#check Accuracy
+confusionMatrix(predict (modFit, newdata = validatingPC), validatingPC$classe) 
+# Results:
+#pca thresh=0.999, 106 predictors, 75%, 2 threads - 2.8 часа, mtry=11 (sqrt), асс=.96
+#pca thresh=0.999, 106 predictors, 10%, 4 threads - 188 sec, mtry=25 (1/3), acc=.86
+#pca thresh=0.99, 59 predictors, 10%, 4 threads - 160 sec, mtry=8 (sqrt), acc=.83
+#pca thresh=0.99, 59 predictors, 10%, 6 threads - 137 sec, mtry=8 (sqrt), acc=.83
+#pca thresh=0.99, 59 predictors, 10%, 6 threads - 140 sec, mtry=8 (sqrt), CVrepeats=30, acc=.83
+
+stopCluster(cl) # Explicitly free up cores again.
+```
+
+Now let's try to build a model on the full predictors set, without usage of PCA reduction.
+```{r trainModel, cache=TRUE, message=FALSE}
+library("doSNOW")
+cl<-makeCluster(5) # Assign number of cores to use
+registerDoSNOW(cl) # Register the cores.
+
+#Using repeated CV, http://appliedpredictivemodeling.com/blog/2014/11/27/vpuig01pqbklmi72b8lcl3ij5hj2qm
+system.time ({
+    nPredictors <- dim (training[,-notUsedColumns])[2]-1
+    modFit <- train (classe ~ . , 
+                 data=training[,-notUsedColumns], method = "rf", prox=TRUE,
+                 trControl = trainControl (method="cv", number = 10, repeats = 10),
+                 tuneGrid=data.frame(mtry=c(
+                     #ceiling(sqrt(nPredictors)), ceiling(nPredictors/3),
+                    ceiling(nPredictors/2),
+                    ceiling(nPredictors*2/3),
+                    nPredictors
+                    ))
+                 )
+}) 
+
+modFit
+
+#check Accuracy
+cm <- confusionMatrix(predict (modFit, newdata = validating), validating$classe) 
+cm 
+#no_pca , 148 predictors, 5%, 6 threads - 83 sec, mtry=148 (100%), acc=.94
+#no_pca , 148 predictors, 10%, 5 threads - 257 sec, mtry=148 (100%), acc=.98
+#no_pca , 148 predictors, 20%, 5 threads - 748 sec, mtry=74 (1/2), acc=.99
+
+stopCluster(cl) # Explicitly free up cores again.
+```
+
+This approach gives us similar results in terms of Accuracy (**`r round(cm$overall[1]*100,2)`%**) but takes a lot less time to build the model. We chose this approch to be the final. So, out of sample error of the model is **`r round(100-cm$overall[1]*100,2)`%**.
+
+### Predicting classes
+Now we'll use the model to predict values of `classe` variable for test dataset. 
+```{r predict, message = FALSE}
+## Impute NA's in test features
+test[,numColumns] <- predict(preObj, test[,numColumns])
+
+## Predict answers
+answers <- predict (modFit, newdata = test)
+data.frame(problem_id = test$problem_id, classe = answers)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("submission/problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+
+````
+
+All predicted values have past the submission test and are correct.
